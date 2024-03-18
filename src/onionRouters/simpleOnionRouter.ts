@@ -1,11 +1,15 @@
 import bodyParser from "body-parser";
 import express from "express";
 import { BASE_ONION_ROUTER_PORT } from "../config";
+import { RegisterNodeBody, nodesRegistry, privateKeys } from "../registry/registry";
+import { exportPrvKey, importPrvKey, rsaDecrypt, symDecrypt } from "../crypto";
+import axios from "axios";
 
 // Déclaration de nodeRegistry comme un objet où les clés sont de type string et les valeurs sont de type string
-const nodeRegistry: { [nodeId: string]: { privateKey: string, publicKey: string } } = {};
+//const nodeRegistry: { [nodeId: string]: { privateKey: string, publicKey: string } } = {};
 
 export async function simpleOnionRouter(nodeId: number) {
+  const privateKey = privateKeys[nodeId]
   const onionRouter = express();
   onionRouter.use(express.json());
   onionRouter.use(bodyParser.json());
@@ -13,7 +17,7 @@ export async function simpleOnionRouter(nodeId: number) {
   // TODO implement the status route
   // onionRouter.get("/status", (req, res) => {});
   onionRouter.get("/status", (req, res) => {
-    res.send("live");
+   return res.send("live"); //verif pas return 
   });
 
   // Define explicit types for all variables
@@ -36,94 +40,51 @@ export async function simpleOnionRouter(nodeId: number) {
     res.json({ result: lastMessageDestination });
   });
 
-  // Users' GET routes
-  onionRouter.get("/getLastReceivedMessage", (req, res) => {
-    res.json({ result: lastReceivedMessage });
-  });
-
-  onionRouter.get("/getLastSentMessage", (req, res) => {
-    res.json({ result: lastSentMessage });
-  });
-  onionRouter.post("/registerNode", (req, res) => {
-        // Récupérer les données envoyées dans le corps de la requête
-        const { nodeId, privateKey, publicKey } = req.body;
-
-        // Enregistrer le noeud dans le registre
-        registerNode(nodeId, privateKey, publicKey);
-    
-        // Répondre à la requête avec un message de succès
-        res.json({ message: 'Node registered successfully.' });
-  });
-  
-
-  // Fonction pour enregistrer un noeud dans le registre
-  function registerNode(nodeId: string, privateKey: string, publicKey: string) {
-    // Stocker les informations du nœud dans le dictionnaire nodeRegistry
-    nodeRegistry[nodeId] = { privateKey, publicKey };
-  } 
-  onionRouter.get('/getPrivateKey', (req, res) => {
-    // Retrieve the node ID from the query parameters
-    const nodeId: string = req.query.nodeId as string;
-
-    // Check if the node ID is valid and if the private key exists for the node
-    const {privateKey, publicKey } = nodeRegistry[nodeId];
-    if (!nodeId || typeof privateKey === 'undefined') { //verif
-        // If the node ID is invalid or the private key doesn't exist, return a 404 error
-        return res.status(404).json({ error: 'Node not found or private key not available' });
-    }
-    const base64PrivateKey = Buffer.from(privateKey).toString('base64');
-
-    // Répondre avec le payload JSON satisfaisant le type TypeScript donné
-    const responsePayload = { result: base64PrivateKey };
-    return res.json(responsePayload);
-    // Respond with the private key of the node
-    //res.json({ privateKey });
-});
-  // Define the TypeScript types
-type NodeInfo = {
-  nodeId: number;
-  pubKey: string;
-};
-
-type Payload = {
-  nodes: NodeInfo[];
-};
-
-// Define the HTTP GET route /getNodeRegistry
-onionRouter.get('/getNodeRegistry', (req, res) => {
-  // Extract the registered nodes from the nodeRegistry
-  const registeredNodes: NodeInfo[] = Object.keys(nodeRegistry).map(nodeId => {
-      return {
-          nodeId: parseInt(nodeId),
-          pubKey: nodeRegistry[nodeId].publicKey
-      };
-  });
-
-  // Construct the response payload
-  const payload: Payload = {
-      nodes: registeredNodes
-  };
-
-  // Respond with the payload
-  res.json(payload);
-});
 // Define the TypeScript type
-type Body = {
-  message: string;
-};
+  type Body = {
+    message: string;
+  };
+  onionRouter.post("/message", async (req, res) => {
+    try {
+        const { message }: { message: string } = req.body;
 
-// Define the HTTP POST route /message
-onionRouter.post('/message', (req, res) => {
-  // Extract the message from the request body
-  const { message }: Body = req.body;
+        // Décrypter le message
+        const symKeyLength = 344; // Longueur de la clé symétrique chiffrée avec la clé publique RSA (344 caractères)
+        const encryptedSymKey = message.slice(0, symKeyLength);
+        const encryptedMessage = message.slice(symKeyLength);
 
-  // Update the value of lastReceivedMessage
-  lastReceivedMessage = message;
-  // Respond with a success message
-  res.json({ success: true, message: 'Message received successfully.' });
+        const symKey = await rsaDecrypt(encryptedSymKey, await importPrvKey(privateKey));
+        const decryptedMessage = await symDecrypt(symKey, encryptedMessage);
+
+        // Extraire l'ID du destinataire et le message à partir du message décrypté
+        const destinationUserId = parseInt(decryptedMessage.slice(-10), 10); // Découper les 10 derniers caractères pour obtenir l'ID du destinataire
+        const actualMessage = decryptedMessage.slice(0, -10); // Exclure les 10 derniers caractères pour obtenir le message réel
+
+        // Transférer le message au nœud suivant dans le circuit
+        const nextNodePort: number = 4000; // Port de base des nœuds
+        const nextNodeUrl: string = `http://localhost:${nextNodePort + destinationUserId}`;
+        const response = await axios.post(`${nextNodeUrl}/message`, { message: decryptedMessage });
+
+        // Répondre avec un message de succès
+        return res.status(200).json({ success: true, message: "Message forwarded successfully." });
+    } catch (error) {
+        console.error("Error forwarding message:", error);
+        return res.status(500).json({ success: false, error: "Error forwarding message." });
+    }
 });
 
-
+onionRouter.post('/registerNode', (req, res) => {
+  const { nodeId, pubKey, privateKey}: RegisterNodeBody = req.body;
+  // Vérification pour éviter les doublons
+  const nodeExists = nodesRegistry.some(node => node.nodeId === nodeId);
+  if (nodeExists) {
+    return res.status(400).send({ error: "Node already registered" });
+  }
+  // Ajout du nœud à la liste
+  nodesRegistry.push({ nodeId, pubKey});
+  privateKeys.push(privateKey);
+  return res.status(201).send({ message: "Node registered successfully" });
+});
 
   const server = onionRouter.listen(BASE_ONION_ROUTER_PORT + nodeId, () => {
     console.log(
