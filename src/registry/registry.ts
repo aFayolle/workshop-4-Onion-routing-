@@ -28,6 +28,7 @@ export const nodesRegistry: Node[] = [];
 export const privateKeys: string[]= [];
 
 export async function launchRegistry() {
+  let nodes: Node[] = [];
   const _registry = express();
   _registry.use(express.json());
   _registry.use(bodyParser.json());
@@ -38,7 +39,7 @@ export async function launchRegistry() {
   {res.send("live");});
 
   // Ajout de la route pour enregistrer un nœud
-  
+  /*
   _registry.post('/registerNode', (req, res) => {
     const { nodeId, pubKey, privateKey}: RegisterNodeBody = req.body;
     // Vérification pour éviter les doublons
@@ -50,27 +51,33 @@ export async function launchRegistry() {
     nodesRegistry.push({ nodeId, pubKey});
     privateKeys.push(privateKey);
     return res.status(201).send({ message: "Node registered successfully" });
+  });*/
+  _registry.post('/registerNode', (req, res) => {
+    const {nodeId, pubKey} = req.body;
+    if (!nodeId || !pubKey) {
+      res.status(400).send("Invalid request body");
+      return;
+    }
+    const nodeExists = nodes.some((node) => node.nodeId === nodeId);
+    const pubKeyExists = nodes.some((node) => node.pubKey === pubKey);
+    console.log(`Registering node: ${nodeId}`);
+
+    if (nodeExists) {
+      res.status(400).send("Node already exists");
+    } else if (pubKeyExists) {
+      res.status(400).send("Public key already exists");
+    } else {
+      nodes.push({nodeId, pubKey});
+      res.status(200).send("Node registered successfully");
+    }
   });
 
 
   // Define the HTTP GET route /getNodeRegistry
   // Définir la route HTTP GET /getNodeRegistry
-  _registry.get('/getNodeRegistry', (req: Request, res: Response) => {
-    try {
-        // Construire le payload de réponse avec les nœuds enregistrés
-        const payload: GetNodeRegistryBody = {
-            nodes: registeredNodes.map(node => ({
-                nodeId: node.nodeId,
-                pubKey: node.pubKey
-            }))
-        };
-
-        // Répondre avec le payload
-        return res.json(payload);
-    } catch (error) {
-        // En cas d'erreur, répondre avec un message d'erreur
-        return res.status(500).json({ error: 'An error occurred while retrieving the node registry' });
-    }
+  _registry.get("/getNodeRegistry", (req, res) => {
+    const registry: GetNodeRegistryBody = { nodes };
+    res.status(200).json(registry);
   });
   _registry.get('/getPrivateKey', (req: Request, res: Response) => {
     try {
@@ -78,7 +85,7 @@ export async function launchRegistry() {
         const nodeId: number = parseInt(req.query.nodeId as string);
 
         // Check if the node ID is valid
-        const node = nodesRegistry.find((node) => node.nodeId === nodeId);
+        const node = nodes.find((node) => node.nodeId === nodeId);
 
         // If the node is not found, return 404
         if (!node) {
